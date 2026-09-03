@@ -1,0 +1,55 @@
+From a2792026d3fb6113cf3c7f96bfaf8d51fbbed3c7 Mon Sep 17 00:00:00 2001
+From: Triet Nguyen <ngmhtriet@gmail.com>
+Date: Fri, 6 Mar 2026 22:48:54 +0700
+Subject: [PATCH] cmd: adding hello command
+
+Signed-off-by: Triet Nguyen <ngmhtriet@gmail.com>
+---
+ cmd/Makefile |  2 ++
+ cmd/hello.c  | 21 +++++++++++++++++++++
+ 2 files changed, 23 insertions(+)
+ create mode 100644 cmd/hello.c
+
+diff --git a/cmd/Makefile b/cmd/Makefile
+index e31ac15ef75..2cdf7ed2045 100644
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -211,6 +211,8 @@ endif # !CONFIG_SPL_BUILD
+ 
+ obj-$(CONFIG_$(SPL_)CMD_TLV_EEPROM) += tlv_eeprom.o
+ 
++obj-y += hello.o
++
+ # core command
+ obj-y += nvedit.o
+ 
+diff --git a/cmd/hello.c b/cmd/hello.c
+new file mode 100644
+index 00000000000..015cdb80390
+--- /dev/null
++++ b/cmd/hello.c
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright 2000-2009
++ * Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++ */
++
++#include <common.h>
++#include <command.h>
++
++static int do_hello(struct cmd_tbl *cmdtp, int flag, int argc,
++		   char *const argv[])
++{
++	printf("Hello from UBOOT, i'm from Linux 226002 team\n");
++	return 0;
++}
++
++U_BOOT_CMD(
++	hello, 1, 1, do_hello,
++	"say hello",
++	"No args"
++);
+-- 
+2.25.1
+

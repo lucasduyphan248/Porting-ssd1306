@@ -1,0 +1,715 @@
+From b273d68fe1d27409881c8f4be227e32617cc1ffd Mon Sep 17 00:00:00 2001
+From: lucasphan <phanquangduy248@gmail.com>
+Date: Wed, 2 Sep 2026 20:39:22 +0700
+Subject: [PATCH] Fix BeagleBone DMTimer3 interrupt driver
+
+Signed-off-by: lucasphan <phanquangduy248@gmail.com>
+---
+ .../arch/arm/boot/dts/am335x-boneblack.dts    |  29 +-
+ .../kernel-source/drivers/bbb_my_drv/Kconfig  |   3 +-
+ .../kernel-source/drivers/bbb_my_drv/Makefile |   4 +-
+ .../drivers/bbb_my_drv/timer_drv_platform.c   | 558 ++++++++++--------
+ 4 files changed, 327 insertions(+), 267 deletions(-)
+
+diff --git a/tmp/work-shared/beaglebone-yocto/kernel-source/arch/arm/boot/dts/am335x-boneblack.dts b/tmp/work-shared/beaglebone-yocto/kernel-source/arch/arm/boot/dts/am335x-boneblack.dts
+index 6906c7c..efbcf27 100644
+--- a/tmp/work-shared/beaglebone-yocto/kernel-source/arch/arm/boot/dts/am335x-boneblack.dts
++++ b/tmp/work-shared/beaglebone-yocto/kernel-source/arch/arm/boot/dts/am335x-boneblack.dts
+@@ -12,16 +12,13 @@
+ / {
+ 	model = "TI AM335x BeagleBone Black";
+ 	compatible = "ti,am335x-bone-black", "ti,am335x-bone", "ti,am33xx";
++};
+ 
+-
+-	timer0: timer@44e05000 {
+-		compatible = "ti,bbb-my-timer";// Tên trùng với driver
+-		reg = <0x44e05000 0x1000>;// DMTimer0 địa chỉ
+-		interrupts = <66>;// Interrupt number
+-		clock-names = "fck";
+-		clocks = <&l4ls_gclk>;// Clock
+-		status = "okay";// Trạng thái bật
+-	};
++&timer3 {
++	compatible = "ti,bbb-my-timer";
++	clocks = <&l4ls_clkctrl AM3_L4LS_TIMER3_CLKCTRL 0>;
++	clock-names = "fck";
++	status = "okay";
+ };
+ 
+ &am33xx_pinmux {
+@@ -40,6 +37,20 @@ &uart2 {
+ 	pinctrl-0 = <&uart2_pins>;
+ };
+ 
++&i2c2 {
++	status = "okay";
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c2_pins>;
++	
++	oled@3c {
++		compatible = "imic,ssd1306";
++		reg = <0x3c>;
++		width = <128>;
++		height = <32>;
++		status = "okay";
++	};
++};
++
+ &cpu0_opp_table {
+ 	/*
+ 	* All PG 2.0 silicon may not support 1GHz but some of the early
+diff --git a/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Kconfig b/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Kconfig
+index 37fad8f..9aa5bef 100644
+--- a/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Kconfig
++++ b/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Kconfig
+@@ -11,8 +11,7 @@ config UART_DRIVER
+         This config is used for My UART DRIVER
+ 
+ config TIMER_DRIVER_PLATFORM
+-    tristate "BBB MY TIMER DRIVER PLATFORM"
++	tristate "BBB MY TIMER DRIVER PLATFORM"
+     default y
+     help
+         This config is used for My Timer driver platform
+-
+diff --git a/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Makefile b/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Makefile
+index 0204bd4..14dc84d 100644
+--- a/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Makefile
++++ b/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/Makefile
+@@ -1,8 +1,8 @@
+ obj-$(CONFIG_MY_DRV)			+= my_drv.o
+ obj-$(CONFIG_UART_DRIVER)			+= uart_driver.o
+-obj-$(CONFIG_TIMER_DRV_PLATFORM)			+= timer_drv_platform.o
++obj-$(CONFIG_TIMER_DRIVER_PLATFORM) += timer_drv_platform.o
+ 
+ 
+ #obj-y: built-in
+ #obj-m: module
+-#obj-n: no build
+\ No newline at end of file
++#obj-n: no build
+diff --git a/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/timer_drv_platform.c b/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/timer_drv_platform.c
+index 4665328..e92db74 100644
+--- a/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/timer_drv_platform.c
++++ b/tmp/work-shared/beaglebone-yocto/kernel-source/drivers/bbb_my_drv/timer_drv_platform.c
+@@ -1,311 +1,361 @@
+-/* Platform driver for TI/AM335x DMTimer (compare mode demo) */
++// SPDX-License-Identifier: GPL-2.0
++/* AM335x DMTimer: one overflow interrupt per second and a userspace counter. */
+ 
+-#include <linux/module.h>
+-#include <linux/io.h>
+-#include <linux/fs.h>
+ #include <linux/cdev.h>
+-#include <linux/device.h>
+-#include <linux/uaccess.h>
+-#include <linux/kdev_t.h>
+-#include <linux/platform_device.h>
++#include <linux/bitops.h>
+ #include <linux/clk.h>
+-#include <linux/of.h>
++#include <linux/delay.h>
++#include <linux/fs.h>
+ #include <linux/interrupt.h>
+-
+-#include "my_drv.h"
+-
+-#define TIMER_DRV_NAME   "my_timer"
+-#define TIMER_CLASS_NAME "my_timer_class"
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/poll.h>
++#include <linux/spinlock.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++
++#define DRIVER_NAME "my_timer"
++#define CLASS_NAME "my_timer_class"
++#define TIMER_HZ 1
++
++#define TIMER_IRQSTATUS 0x28
++#define TIMER_IRQENABLE 0x2c
++#define TIMER_IRQENABLE_CLR 0x30
++#define TIMER_IRQWAKEEN 0x20
++#define TIMER_TIOCP_CFG 0x10
++#define TIMER_TCLR 0x38
++#define TIMER_TCRR 0x3c
++#define TIMER_TLDR 0x40
++
++#define TIMER_IRQ_OVF BIT(1)
++#define TIMER_TCLR_ST BIT(0)
++#define TIMER_TCLR_AR BIT(1)
++#define TIMER_TIOCP_CFG_SOFTRESET BIT(0)
++#define TIMER_TIOCP_CFG_ENAWAKEUP BIT(2)
++#define TIMER_TIOCP_CFG_IDLEMODE_SMART (2 << 3)
++#define TIMER_TIOCP_CFG_CLOCKACTIVITY BIT(9)
++
++#define TIMER_IOC_MAGIC 'T'
++#define TIMER_IOC_START _IO(TIMER_IOC_MAGIC, 1)
++#define TIMER_IOC_STOP _IO(TIMER_IOC_MAGIC, 2)
++#define TIMER_IOC_RESET _IO(TIMER_IOC_MAGIC, 3)
++#define TIMER_IOC_GET_COUNT _IOR(TIMER_IOC_MAGIC, 4, __u64)
+ 
+ struct my_timer_dev {
+-       struct device *dev;
+-       struct cdev cdev;
+-       struct class *class;
+-       struct device *chardev;
+-       dev_t devt;
+-
+-       void __iomem *base;
+-       struct clk *clk;
+-       int irq;
+-
+-       char buffer[BUFFER_SIZE];
+-       size_t buffer_len;
++	struct device *dev;
++	void __iomem *base;
++	struct clk *clk;
++	unsigned long clock_rate;
++	u32 reload_value;
++	int irq;
++	dev_t devt;
++	struct cdev cdev;
++	struct class *class;
++	struct device *chardev;
++	spinlock_t lock;
++	wait_queue_head_t read_queue;
++	u64 counter;
++	bool event_pending;
++	bool running;
+ };
+ 
+-static int reg_read(void __iomem *base, unsigned int offset)
++static void timer_write(struct my_timer_dev *timer, u32 offset, u32 value)
+ {
+-       return readl(base + offset);
++	writel(value, timer->base + offset);
+ }
+ 
+-static void reg_write(void __iomem *base, unsigned int offset, u32 value)
++static u32 timer_read(struct my_timer_dev *timer, u32 offset)
+ {
+-       writel(value, base + offset);
++	return readl(timer->base + offset);
+ }
+ 
+-static int my_open(struct inode *inode, struct file *file)
++static int my_timer_enable_module(struct my_timer_dev *timer)
+ {
+-       struct my_timer_dev *tdev;
+-
+-       tdev = container_of(inode->i_cdev, struct my_timer_dev, cdev);
+-       file->private_data = tdev;
+-       dev_info(tdev->dev, "device opened\n");
+-       return 0;
++	u32 revision;
++	u32 config;
++	int i;
++
++	/* The functional register layout used below is DMTimer v2.  The
++	 * surrounding SYSC register still needs the v2 reset/enable sequence. */
++	revision = timer_read(timer, 0x00);
++	if (revision >> 16) {
++		config = timer_read(timer, TIMER_TIOCP_CFG);
++		config |= TIMER_TIOCP_CFG_SOFTRESET;
++		timer_write(timer, TIMER_TIOCP_CFG, config);
++
++		for (i = 0; i < 1000; i++) {
++			if (!(timer_read(timer, TIMER_TIOCP_CFG) &
++			      TIMER_TIOCP_CFG_SOFTRESET))
++				break;
++			udelay(1);
++		}
++		if (i == 1000)
++			return -ETIMEDOUT;
++
++		/* Type-2 SYSC: SMART_IDLE_WAKEUP, as used by the kernel timer
++		 * driver.  Do not set bit 0 here; it is SOFTRESET for type 2. */
++		timer_write(timer, TIMER_TIOCP_CFG, 3 << 2);
++	} else {
++		/* Type-1 SYSC configuration. */
++		timer_write(timer, TIMER_TIOCP_CFG,
++			     TIMER_TIOCP_CFG_CLOCKACTIVITY |
++			     TIMER_TIOCP_CFG_IDLEMODE_SMART |
++			     TIMER_TIOCP_CFG_ENAWAKEUP | BIT(0));
++	}
++
++	readl(timer->base + TIMER_TIOCP_CFG);
++	return 0;
+ }
+ 
+-static int my_release(struct inode *inode, struct file *file)
++static void my_timer_start_locked(struct my_timer_dev *timer)
+ {
+-       struct my_timer_dev *tdev = file->private_data;
+-
+-       if (tdev)
+-               dev_info(tdev->dev, "device released\n");
+-       return 0;
++	timer_write(timer, TIMER_IRQSTATUS, TIMER_IRQ_OVF);
++	timer_write(timer, TIMER_TLDR, timer->reload_value);
++	timer_write(timer, TIMER_TCRR, timer->reload_value);
++	timer_write(timer, TIMER_IRQENABLE, TIMER_IRQ_OVF);
++	timer_write(timer, TIMER_IRQWAKEEN, TIMER_IRQ_OVF);
++	timer_write(timer, TIMER_TCLR, TIMER_TCLR_ST | TIMER_TCLR_AR);
++	timer->running = true;
+ }
+ 
+-static ssize_t my_read(struct file *file, char __user *ubuf, size_t size, loff_t *off)
++static void my_timer_stop_locked(struct my_timer_dev *timer)
+ {
+-       struct my_timer_dev *tdev = file->private_data;
+-       size_t available;
+-       size_t to_copy;
+-
+-       if (!tdev)
+-               return -ENODEV;
+-
+-       if (*off >= tdev->buffer_len)
+-               return 0;
+-
+-       available = tdev->buffer_len - *off;
+-       to_copy = min(size, available);
+-
+-       if (copy_to_user(ubuf, tdev->buffer + *off, to_copy))
+-               return -EFAULT;
+-
+-       *off += to_copy;
+-       return to_copy;
++	timer_write(timer, TIMER_TCLR, 0);
++	timer_write(timer, TIMER_IRQENABLE_CLR, TIMER_IRQ_OVF);
++	timer->running = false;
+ }
+ 
+-static ssize_t my_write(struct file *file, const char __user *ubuf, size_t size, loff_t *off)
++static irqreturn_t my_timer_irq(int irq, void *data)
+ {
+-       struct my_timer_dev *tdev = file->private_data;
+-
+-       (void)off;
+-
+-       if (!tdev)
+-               return -ENODEV;
+-
+-       if (size > BUFFER_SIZE - 1)
+-               return -EINVAL;
+-
+-       if (copy_from_user(tdev->buffer, ubuf, size))
+-               return -EFAULT;
+-
+-       tdev->buffer_len = size;
+-       tdev->buffer[size] = '\0';
+-       return size;
++	struct my_timer_dev *timer = data;
++	unsigned long flags;
++	u32 status;
++
++	status = timer_read(timer, TIMER_IRQSTATUS);
++	if (!(status & TIMER_IRQ_OVF))
++		return IRQ_NONE;
++
++	timer_write(timer, TIMER_IRQSTATUS, TIMER_IRQ_OVF);
++	spin_lock_irqsave(&timer->lock, flags);
++	if (timer->running) {
++		timer->counter++;
++		timer->event_pending = true;
++	}
++	spin_unlock_irqrestore(&timer->lock, flags);
++	wake_up_interruptible(&timer->read_queue);
++	return IRQ_HANDLED;
+ }
+ 
+-static void timer_config_compare_mode(struct my_timer_dev *tdev)
++static int my_timer_open(struct inode *inode, struct file *file)
+ {
+-       /* Clear any pending IRQs */
+-       reg_write(tdev->base, TIMER_IRQSTATUS, 0x7);
+-
+-       /* Enable match/overflow IRQs (demo) */
+-       reg_write(tdev->base, TIMER_IRQENABLE_SET, 0x7);
+-
+-       /* Compare match value + counter start */
+-       reg_write(tdev->base, TIMER_TMAR, 0x1000);
+-       reg_write(tdev->base, TIMER_TCRR, 0);
+-
+-       /* CE=1 (compare enable, bit 6), ST=1 (start, bit 0) */
+-       reg_write(tdev->base, TIMER_TCLR, reg_read(tdev->base, TIMER_TCLR) | (1 << 6) | 1);
++	file->private_data = container_of(inode->i_cdev,
++					 struct my_timer_dev, cdev);
++	return 0;
+ }
+ 
+-static long my_ioctl(struct file *file, unsigned int cmd, unsigned long u_addr)
++static ssize_t my_timer_read(struct file *file, char __user *user_buffer,
++				     size_t size, loff_t *offset)
+ {
+-       struct my_timer_dev *tdev = file->private_data;
+-       size_t i;
+-       size_t len;
+-
+-       (void)u_addr;
+-
+-       if (!tdev)
+-               return -ENODEV;
+-
+-       switch (cmd) {
+-       case IOCTL_STRING_CAPITALIZE:
+-               len = strnlen(tdev->buffer, BUFFER_SIZE);
+-               for (i = 0; i < len; i++) {
+-                       if (tdev->buffer[i] >= 'a' && tdev->buffer[i] <= 'z')
+-                               tdev->buffer[i] -= 32;
+-               }
+-               tdev->buffer_len = len;
+-               dev_info(tdev->dev, "buffer capitalized: %s\n", tdev->buffer);
+-               return 0;
+-
+-       case IOCTL_STRING_REVERSE:
+-               len = strnlen(tdev->buffer, BUFFER_SIZE);
+-               if (len > 1) {
+-                       size_t j;
+-                       for (i = 0, j = len - 1; i < j; i++, j--) {
+-                               char tmp = tdev->buffer[i];
+-                               tdev->buffer[i] = tdev->buffer[j];
+-                               tdev->buffer[j] = tmp;
+-                       }
+-               }
+-               tdev->buffer_len = len;
+-               dev_info(tdev->dev, "buffer reversed: %s\n", tdev->buffer);
+-               return 0;
+-
+-       case IOCTL_TIMER_COMPARE_MODE:
+-               timer_config_compare_mode(tdev);
+-               dev_info(tdev->dev, "timer compare mode configured\n");
+-               return 0;
+-
+-       default:
+-               return -ENOTTY;
+-       }
++	struct my_timer_dev *timer = file->private_data;
++	unsigned long flags;
++	u64 counter;
++	int ret;
++
++	if (size < sizeof(counter))
++		return -EINVAL;
++
++	if (file->f_flags & O_NONBLOCK) {
++		if (!READ_ONCE(timer->event_pending))
++			return -EAGAIN;
++	} else {
++		ret = wait_event_interruptible(timer->read_queue,
++					       READ_ONCE(timer->event_pending));
++		if (ret)
++			return ret;
++	}
++
++	spin_lock_irqsave(&timer->lock, flags);
++	counter = timer->counter;
++	timer->event_pending = false;
++	spin_unlock_irqrestore(&timer->lock, flags);
++
++	if (copy_to_user(user_buffer, &counter, sizeof(counter)))
++		return -EFAULT;
++	return sizeof(counter);
+ }
+ 
+-static irqreturn_t timer_handler(int irq, void *dev_id)
++static __poll_t my_timer_poll(struct file *file, poll_table *wait)
+ {
+-       struct my_timer_dev *tdev = dev_id;
++	struct my_timer_dev *timer = file->private_data;
++	__poll_t mask = 0;
+ 
+-       if (!tdev || !tdev->base)
+-               return IRQ_NONE;
++	poll_wait(file, &timer->read_queue, wait);
++	if (READ_ONCE(timer->event_pending))
++		mask |= EPOLLIN | EPOLLRDNORM;
++	return mask;
++}
+ 
+-       /* Ack/clear interrupt sources */
+-       reg_write(tdev->base, TIMER_IRQSTATUS, 0x7);
+-       dev_info_ratelimited(tdev->dev, "timer interrupt\n");
+-       return IRQ_HANDLED;
++static long my_timer_ioctl(struct file *file, unsigned int command,
++				   unsigned long argument)
++{
++	struct my_timer_dev *timer = file->private_data;
++	unsigned long flags;
++	u64 counter;
++
++	switch (command) {
++	case TIMER_IOC_START:
++		spin_lock_irqsave(&timer->lock, flags);
++		my_timer_start_locked(timer);
++		spin_unlock_irqrestore(&timer->lock, flags);
++		return 0;
++	case TIMER_IOC_STOP:
++		spin_lock_irqsave(&timer->lock, flags);
++		my_timer_stop_locked(timer);
++		spin_unlock_irqrestore(&timer->lock, flags);
++		return 0;
++	case TIMER_IOC_RESET:
++		spin_lock_irqsave(&timer->lock, flags);
++		timer->counter = 0;
++		timer->event_pending = false;
++		spin_unlock_irqrestore(&timer->lock, flags);
++		return 0;
++	case TIMER_IOC_GET_COUNT:
++		counter = READ_ONCE(timer->counter);
++		return copy_to_user((void __user *)argument, &counter,
++				    sizeof(counter)) ? -EFAULT : 0;
++	default:
++		return -ENOTTY;
++	}
+ }
+ 
+-static const struct file_operations my_fops = {
+-       .owner = THIS_MODULE,
+-       .open = my_open,
+-       .read = my_read,
+-       .write = my_write,
+-       .release = my_release,
+-       .unlocked_ioctl = my_ioctl,
++static const struct file_operations my_timer_fops = {
++	.owner = THIS_MODULE,
++	.open = my_timer_open,
++	.read = my_timer_read,
++	.poll = my_timer_poll,
++	.unlocked_ioctl = my_timer_ioctl,
+ };
+ 
+ static int my_timer_probe(struct platform_device *pdev)
+ {
+-       struct my_timer_dev *tdev;
+-       int ret;
+-
+-       tdev = devm_kzalloc(&pdev->dev, sizeof(*tdev), GFP_KERNEL);
+-       if (!tdev)
+-               return -ENOMEM;
+-
+-       tdev->dev = &pdev->dev;
+-       platform_set_drvdata(pdev, tdev);
+-
+-       /* Map registers */
+-       tdev->base = devm_platform_ioremap_resource(pdev, 0);
+-       if (IS_ERR(tdev->base))
+-               return PTR_ERR(tdev->base);
+-
+-       /* Clock (optional depending on DT binding) */
+-       tdev->clk = devm_clk_get_optional(&pdev->dev, NULL);
+-       if (IS_ERR(tdev->clk))
+-               return PTR_ERR(tdev->clk);
+-       if (tdev->clk) {
+-               ret = clk_prepare_enable(tdev->clk);
+-               if (ret)
+-                       return ret;
+-       }
+-
+-       /* IRQ */
+-       tdev->irq = platform_get_irq(pdev, 0);
+-       if (tdev->irq < 0) {
+-               ret = tdev->irq;
+-               goto err_disable_clk;
+-       }
+-
+-       ret = devm_request_irq(&pdev->dev, tdev->irq, timer_handler, 0, TIMER_DRV_NAME, tdev);
+-       if (ret)
+-               goto err_disable_clk;
+-
+-       /* Char device */
+-       ret = alloc_chrdev_region(&tdev->devt, 0, 1, TIMER_DRV_NAME);
+-       if (ret)
+-               goto err_disable_clk;
+-
+-       cdev_init(&tdev->cdev, &my_fops);
+-       tdev->cdev.owner = THIS_MODULE;
+-       ret = cdev_add(&tdev->cdev, tdev->devt, 1);
+-       if (ret)
+-               goto err_unregister_region;
+-
+-       tdev->class = class_create(THIS_MODULE, TIMER_CLASS_NAME);
+-       if (IS_ERR(tdev->class)) {
+-               ret = PTR_ERR(tdev->class);
+-               goto err_del_cdev;
+-       }
+-
+-       tdev->chardev = device_create(tdev->class, &pdev->dev, tdev->devt, NULL, TIMER_DRV_NAME);
+-       if (IS_ERR(tdev->chardev)) {
+-               ret = PTR_ERR(tdev->chardev);
+-               goto err_destroy_class;
+-       }
+-
+-       dev_info(&pdev->dev, "probe ok (irq=%d)\n", tdev->irq);
+-       return 0;
++	struct my_timer_dev *timer;
++	int ret;
++
++	timer = devm_kzalloc(&pdev->dev, sizeof(*timer), GFP_KERNEL);
++	if (!timer)
++		return -ENOMEM;
++	timer->dev = &pdev->dev;
++	platform_set_drvdata(pdev, timer);
++	spin_lock_init(&timer->lock);
++	init_waitqueue_head(&timer->read_queue);
++
++	timer->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(timer->base))
++		return PTR_ERR(timer->base);
++
++	timer->clk = devm_clk_get(&pdev->dev, "fck");
++	if (IS_ERR(timer->clk))
++		return dev_err_probe(&pdev->dev, PTR_ERR(timer->clk),
++				     "failed to get fck\n");
++	ret = clk_prepare_enable(timer->clk);
++	if (ret)
++		return ret;
++	ret = my_timer_enable_module(timer);
++	if (ret)
++		goto err_disable_clk;
++
++	timer->clock_rate = clk_get_rate(timer->clk);
++	if (!timer->clock_rate) {
++		ret = -EINVAL;
++		dev_err(&pdev->dev, "invalid timer clock rate\n");
++		goto err_disable_clk;
++	}
++	timer->reload_value = (u32)(0xffffffffUL -
++				    timer->clock_rate / TIMER_HZ + 1);
++
++	timer->irq = platform_get_irq(pdev, 0);
++	if (timer->irq < 0) {
++		ret = timer->irq;
++		goto err_disable_clk;
++	}
++	ret = devm_request_irq(&pdev->dev, timer->irq, my_timer_irq,
++				       0, DRIVER_NAME, timer);
++	if (ret)
++		goto err_disable_clk;
++
++	ret = alloc_chrdev_region(&timer->devt, 0, 1, DRIVER_NAME);
++	if (ret)
++		goto err_disable_clk;
++	cdev_init(&timer->cdev, &my_timer_fops);
++	timer->cdev.owner = THIS_MODULE;
++	ret = cdev_add(&timer->cdev, timer->devt, 1);
++	if (ret)
++		goto err_unregister_region;
++
++	timer->class = class_create(THIS_MODULE, CLASS_NAME);
++	if (IS_ERR(timer->class)) {
++		ret = PTR_ERR(timer->class);
++		goto err_del_cdev;
++	}
++	timer->chardev = device_create(timer->class, &pdev->dev, timer->devt,
++					       NULL, DRIVER_NAME);
++	if (IS_ERR(timer->chardev)) {
++		ret = PTR_ERR(timer->chardev);
++		goto err_destroy_class;
++	}
++
++	spin_lock_irq(&timer->lock);
++	my_timer_start_locked(timer);
++	spin_unlock_irq(&timer->lock);
++	dev_info(&pdev->dev, "started: irq=%d clock=%luHz reload=0x%08x\n",
++		 timer->irq, timer->clock_rate, timer->reload_value);
++	return 0;
+ 
+ err_destroy_class:
+-       class_destroy(tdev->class);
++	class_destroy(timer->class);
+ err_del_cdev:
+-       cdev_del(&tdev->cdev);
++	cdev_del(&timer->cdev);
+ err_unregister_region:
+-       unregister_chrdev_region(tdev->devt, 1);
++	unregister_chrdev_region(timer->devt, 1);
+ err_disable_clk:
+-       if (tdev->clk)
+-               clk_disable_unprepare(tdev->clk);
+-       return ret;
++	clk_disable_unprepare(timer->clk);
++	return ret;
+ }
+ 
+ static int my_timer_remove(struct platform_device *pdev)
+ {
+-       struct my_timer_dev *tdev = platform_get_drvdata(pdev);
+-
+-       if (!tdev)
+-               return 0;
+-
+-       /* Stop timer */
+-       if (tdev->base)
+-               reg_write(tdev->base, TIMER_TCLR, 0);
+-
+-       if (tdev->chardev)
+-               device_destroy(tdev->class, tdev->devt);
+-       if (tdev->class)
+-               class_destroy(tdev->class);
+-
+-       cdev_del(&tdev->cdev);
+-       unregister_chrdev_region(tdev->devt, 1);
+-
+-       if (tdev->clk)
+-               clk_disable_unprepare(tdev->clk);
+-
+-       dev_info(&pdev->dev, "removed\n");
+-       return 0;
++	struct my_timer_dev *timer = platform_get_drvdata(pdev);
++
++	spin_lock_irq(&timer->lock);
++	my_timer_stop_locked(timer);
++	spin_unlock_irq(&timer->lock);
++	device_destroy(timer->class, timer->devt);
++	class_destroy(timer->class);
++	cdev_del(&timer->cdev);
++	unregister_chrdev_region(timer->devt, 1);
++	clk_disable_unprepare(timer->clk);
++	return 0;
+ }
+ 
+-static const struct of_device_id my_bbb_timer_of_match[] = {
+-       { .compatible = "ti,bbb-my-timer" },
+-       { }
++static const struct of_device_id my_timer_of_match[] = {
++	{ .compatible = "ti,bbb-my-timer" },
++	{ }
+ };
+-MODULE_DEVICE_TABLE(of, my_bbb_timer_of_match);
+-
+-static struct platform_driver my_bbb_timer = {
+-       .probe = my_timer_probe,
+-       .remove = my_timer_remove,
+-       .driver = {
+-               .name = TIMER_DRV_NAME,
+-               .of_match_table = my_bbb_timer_of_match,
+-       },
++MODULE_DEVICE_TABLE(of, my_timer_of_match);
++
++static struct platform_driver my_timer_driver = {
++	.probe = my_timer_probe,
++	.remove = my_timer_remove,
++	.driver = {
++		.name = DRIVER_NAME,
++		.of_match_table = my_timer_of_match,
++	},
+ };
+ 
+-module_platform_driver(my_bbb_timer);
++module_platform_driver(my_timer_driver);
+ 
+ MODULE_LICENSE("GPL");
+-MODULE_AUTHOR("BBB_Lucas");
+-MODULE_DESCRIPTION("AM335x DMTimer platform driver (compare mode)");
+\ No newline at end of file
++MODULE_AUTHOR("BBB");
++MODULE_DESCRIPTION("AM335x DMTimer interrupt counter driver");
+-- 
+2.25.1
+

@@ -1,0 +1,30 @@
+           CPU0       
+ 16:       4979      INTC  68 Level     clockevent
+ 17:          0      INTC  96 Level     44e07000.gpio
+ 18:        971      INTC  72 Level     44e09000.serial
+ 19:        223      INTC  70 Level     44e0b000.i2c
+ 22:          0      INTC  75 Level     rtc0
+ 23:          0      INTC  76 Level     rtc0
+ 24:          0      INTC  74 Level     uartirq-22
+ 27:        268      INTC  69 Level     my_timer
+ 32:          0      INTC  98 Level     4804c000.gpio
+ 33:       2930      INTC  64 Level     mmc0
+ 35:       3254      INTC  30 Level     4819c000.i2c
+ 36:          0      INTC  32 Level     481ac000.gpio
+ 37:          0      INTC  62 Level     481ae000.gpio
+ 38:        238      INTC  28 Level     mmc1
+ 39:          0      INTC  36 Level     tilcdc
+ 40:          0      INTC 111 Level     48310000.rng
+ 42:        147      INTC  41 Level     4a100000.switch
+ 43:         42      INTC  42 Level     4a100000.switch
+ 45:       1046      INTC  12 Level     49000000.dma_ccint
+ 47:          5      INTC  14 Level     49000000.dma_ccerrint
+ 51:          0      INTC  18 Level     musb-hdrc.0
+ 52:          1      INTC  19 Level     musb-hdrc.1
+ 53:          0      INTC  17 Level     47400000.dma-controller
+ 57:          0      INTC   3 Level     arm-pmu
+ 58:          0      INTC   7 Level     tps65217-irq
+ 60:          0  tps65217   0 Edge      vbus
+ 62:          0  4804c000.gpio  25 Level     tda998x
+ 63:          0  44e07000.gpio   6 Edge      48060000.mmc cd
+Err:          0

@@ -1,0 +1,27 @@
+From e5e7d9a1adc1979d5048a55136756ebf06b6a821 Mon Sep 17 00:00:00 2001
+From: lucasphan <phanquangduy248@gmail.com>
+Date: Wed, 18 Mar 2026 02:21:06 -0700
+Subject: [PATCH] Speaker: adding hello message
+
+Adding hello message for our class
+
+Signed-off-by: lucasphan <phanquangduy248@gmail.com>
+---
+ Hello/Speaker.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Hello/Speaker.cpp b/Hello/Speaker.cpp
+index ee7955b..d4701dd 100644
+--- a/Hello/Speaker.cpp
++++ b/Hello/Speaker.cpp
+@@ -5,6 +5,6 @@ using namespace std;
+ 
+ namespace Hello {
+   void Speaker::sayHello() {
+-    cout << "Hello, world!\n";
++    cout << "Hello, imic class!\n";
+   }
+ }
+-- 
+2.25.1
+
